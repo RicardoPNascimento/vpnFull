@@ -1,0 +1,157 @@
+Excelente decisão! Vou te entregar um guia claro, detalhado e didático, estruturado como registro fiel do que fizemos, incluindo os comandos e comentários de cada etapa, para que você replique facilmente quando quiser.
+
+---
+
+## 🛡️ Documentação: Instalação & Replicação do WireGuard com CrowdSec em Ubuntu Oracle Cloud
+
+---
+
+### **0. Pré-requisito**
+
+- Máquina Ubuntu já criada e acessível via SSH na Oracle Cloud.
+- WireGuard já instalado e funcionando (caso for só replicar a segurança).
+
+---
+
+### **1. Conexão na máquina**
+
+```bash
+ssh -i sua-chave.key ubuntu@IP_DA_VM
+```
+Acesse como root ou usuário com sudo.
+
+---
+
+### **2. Atualização do sistema**
+
+```bash
+sudo apt update && sudo apt upgrade -y
+```
+Garante que todas as dependências estejam atuais.
+
+---
+
+### **3. Instalação do CrowdSec**
+
+Adiciona o repositório oficial e instala:
+
+```bash
+curl -s https://install.crowdsec.net | sudo sh
+sudo apt install crowdsec -y
+```
+> O primeiro comando prepara o repositório, o segundo instala o CrowdSec.
+
+---
+
+### **4. Instalação do bouncer do CrowdSec (responsável pelo bloqueio no firewall)**
+
+```bash
+sudo apt install crowdsec-firewall-bouncer-iptables -y
+```
+O bouncer lê as decisões do CrowdSec e bloqueia automaticamente atacantes pelo iptables.
+
+---
+
+### **5. Verificação dos serviços**
+
+Depois de instalado:
+
+```bash
+sudo systemctl status crowdsec
+sudo systemctl status crowdsec-firewall-bouncer
+```
+Ambos devem aparecer como “active (running)”.
+
+---
+
+### **6. Conferência das políticas ativas**
+
+Ver cenários de ataque monitorados (regras de segurança):
+
+```bash
+sudo cscli scenarios list
+```
+Ver parsers ativos (tipos de log analisados):
+
+```bash
+sudo cscli parsers list
+```
+Ver IPs bloqueados no momento:
+
+```bash
+sudo cscli decisions list
+```
+Ver histórico de alertas:
+
+```bash
+sudo cscli alerts list
+```
+
+---
+
+### **7. Como ajustar/replicar políticas (opcional)**
+
+- Se quiser padronizar configurações customizadas, copie os arquivos YAML de `/etc/crowdsec/scenarios/` e `/etc/crowdsec/parsers/` entre as máquinas.
+- Para garantir tudo atualizado:
+
+```bash
+sudo cscli hub update
+sudo cscli collections upgrade
+sudo systemctl restart crowdsec crowdsec-firewall-bouncer
+```
+
+---
+
+### **8. Teste e monitoramento**
+
+Para validar:
+
+- Rode novamente `cscli decisions list` e veja IPs bloqueados.
+- Se for abrir outros serviços além de SSH, instale cenários adicionais da CrowdSec com:
+
+```bash
+sudo cscli scenarios install crowdsecurity/nginx-bf   # exemplo para nginx
+```
+Consulte a [documentação oficial](https://docs.crowdsec.net/) para aplicações específicas.
+
+---
+
+### **9. Como clonar configurações entre VMs**
+
+Você pode:
+- Copiar os arquivos de cenário/parsers via `scp`.
+- Rodar novamente todo o procedimento acima (sem perigo de duplicidade!).
+
+---
+
+### **Notas e Dicas importantes**
+
+- **CrowdSec é modular:** Só monitora (`parsers`) e bloqueia (`scenarios`) o que você ativar.
+- **A cada atualização** de sistema, rode o upgrade do CrowdSec também para manter a segurança no topo.
+- **Toda máquina nova pode receber exatamente esse procedimento**: comandos são universais para qualquer Ubuntu 20.04 ou superior em nuvem.
+
+---
+
+### **Exemplo de comandos para replicar:**
+
+```bash
+sudo apt update && sudo apt upgrade -y
+curl -s https://install.crowdsec.net | sudo sh
+sudo apt install crowdsec -y
+sudo apt install crowdsec-firewall-bouncer-iptables -y
+sudo cscli hub update
+sudo cscli collections upgrade
+sudo systemctl restart crowdsec crowdsec-firewall-bouncer
+sudo cscli scenarios list
+sudo cscli parsers list
+sudo cscli decisions list
+```
+
+---
+
+### **Resumo final**
+
+Você agora domina o ciclo de instalar, rodar, monitorar e replicar uma proteção de alto nível com CrowdSec para qualquer VM exposta, sem mistério e com todos os comandos essenciais nesta receita.  
+Basta seguir esse passo a passo em qualquer nova instância/pasta do seu DevOps e estará protegido.
+
+Se quiser este conteúdo em PDF/Markdown ou precisa de um roteiro de backup/restauração das configs YAML, só avisar!
