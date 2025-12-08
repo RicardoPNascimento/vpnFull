@@ -1,0 +1,199 @@
+Perfeito! Aqui está a documentação completa em Markdown:
+
+---
+
+# 🛡️ Documentação de Infraestrutura
+**Oracle Cloud Free Tier - Multi-Instance VPN & Security Setup**
+
+---
+
+## 1. Visão Geral da Infraestrutura
+
+Infraestrutura distribuída em 3 instâncias VPS no Oracle Cloud Free Tier (~1GB RAM, 1 vCPU cada).
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    ☁️  ORACLE CLOUD FREE TIER                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐        │
+│  │  🖥️ VPS 1     │   │  🖥️ VPS 2     │   │  🖥️ VPS 3     │        │
+│  │  (Backup)    │   │  (Principal) │   │  (API/Web)   │        │
+│  ├──────────────┤   ├──────────────┤   ├──────────────┤        │
+│  │ • WireGuard  │   │ • WireGuard  │   │ • Nginx      │        │
+│  │              │   │ • AdGuard    │   │ • Docker     │        │
+│  │              │   │ • CrowdSec   │   │ • OTP API    │        │
+│  ├──────────────┤   ├──────────────┤   ├──────────────┤        │
+│  │ 📡 51820/UDP │   │ 📡 51820/UDP │   │ 📡 80,443,8080│       │
+│  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘        │
+│         │                  │                  │                 │
+│         └──────────────────┼──────────────────┘                 │
+│                            │                                    │
+│                  ┌─────────▼─────────┐                          │
+│                  │  🔒 VPN Network   │                          │
+│                  │  10.1.141.0/24    │                          │
+│                  └─────────┬─────────┘                          │
+└────────────────────────────┼────────────────────────────────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+        ┌─────▼─────┐  ┌─────▼─────┐  ┌─────▼─────┐
+        │ 💻 Fedora │  │ 📱 Mobile │  │ 💻 Chrome │
+        │ 10.1.141.2│  │           │  │ 10.1.141.3│
+        └───────────┘  └───────────┘  └───────────┘
+```
+
+| Instância | Função | Serviços | Portas | Status |
+|-----------|--------|----------|--------|--------|
+| **VPS 1** (Backup) | VPN de redundância | WireGuard | 51820/UDP | ✅ Ativo |
+| **VPS 2** (Principal) | VPN + DNS + Segurança | WireGuard, AdGuard Home, CrowdSec | 51820/UDP | ✅ Ativo |
+| **VPS 3** (API/Web) | API e interface web | OpenTripPlanner, Nginx, Docker | 80, 443, 8080/TCP | 🌐 Público |
+
+---
+
+## 2. Configuração VPN (WireGuard)
+
+**Rede VPN:** `10.1.141.0/24`  
+**Porta Padrão:** `51820/UDP`
+
+### Dispositivos Conectados
+
+| Dispositivo | IP VPN | Função |
+|-------------|--------|--------|
+| 🖥️ VPS Principal | `10.1.141.1` | Gateway/Servidor |
+| 💻 Fedora | `10.1.141.2` | Cliente Desktop |
+| 📱 Chromebook | `10.1.141.3` | Cliente Móvel |
+
+### Exemplo de Configuração do Cliente
+
+```ini
+# /etc/wireguard/wg0.conf
+
+[Interface]
+PrivateKey = <CHAVE_PRIVADA_DO_CLIENTE>
+Address = 10.1.141.3/32
+DNS = 10.1.141.1
+
+[Peer]
+PublicKey = <CHAVE_PUBLICA_DO_SERVIDOR>
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = <IP_PUBLICO_VPS>:51820
+PersistentKeepalive = 25
+```
+
+> ⚠️ **Importante:** Substitua as chaves e o IP público pelos valores reais.
+
+---
+
+## 3. Serviços e Acessos
+
+| Serviço | URL/Endereço | Acesso |
+|---------|--------------|--------|
+| 🛡️ **AdGuard Home Dashboard** | `http://10.1.141.1:3000` | 🔒 Via VPN |
+| 🔍 **DNS AdGuard** | `10.1.141.1` | 🔒 Via VPN |
+| 🗺️ **OpenTripPlanner API** | `http://[IP-PÚBLICO]:8080/otp` | 🌐 Público |
+| 🌍 **Interface Web** | `https://[DOMÍNIO]` | 🌐 Público |
+
+> ✅ **Dica:** Configure `10.1.141.1` como DNS nos dispositivos conectados à VPN para usar a filtragem do AdGuard.
+
+---
+
+## 4. Camadas de Segurança
+
+| Camada | Descrição |
+|--------|-----------|
+| 🧱 **Firewall (iptables/nftables)** | Regras de controle de tráfego, apenas portas necessárias expostas |
+| 🤖 **CrowdSec** | Detecção de intrusão colaborativa com blocklist de ~15.000 IPs maliciosos |
+| 🔒 **VPN WireGuard** | Túnel criptografado para acesso interno seguro |
+| 🔄 **Nginx Reverse Proxy** | SSL/TLS, headers de segurança, rate limiting |
+
+---
+
+## 5. Portas Abertas
+
+| Porta | Protocolo | Serviço | Instância | Exposição |
+|-------|-----------|---------|-----------|-----------|
+| 51820 | UDP | WireGuard | VPS 1, VPS 2 | 🌐 Público |
+| 80 | TCP | HTTP (Nginx) | VPS 3 | 🌐 Público |
+| 443 | TCP | HTTPS (Nginx) | VPS 3 | 🌐 Público |
+| 8080 | TCP | OpenTripPlanner API | VPS 3 | 🌐 Público |
+| 3000 | TCP | AdGuard Home | VPS 2 | 🔒 VPN only |
+
+---
+
+## 6. Comandos Úteis
+
+### WireGuard
+```bash
+wg show                    # Status da interface VPN
+wg-quick up wg0            # Iniciar VPN
+wg-quick down wg0          # Parar VPN
+wg genkey | tee privatekey | wg pubkey > publickey  # Gerar chaves
+```
+
+### CrowdSec
+```bash
+cscli decisions list       # Ver IPs bloqueados
+cscli metrics              # Métricas do sistema
+cscli hub update           # Atualizar collections
+cscli bouncers list        # Ver bouncers ativos
+cscli alerts list          # Ver alertas recentes
+```
+
+### Docker
+```bash
+docker ps                  # Containers em execução
+docker logs <container>    # Ver logs
+docker-compose up -d       # Iniciar serviços
+docker-compose down        # Parar serviços
+docker stats               # Uso de recursos
+```
+
+### Firewall
+```bash
+iptables -L -n -v          # Listar regras (iptables)
+nft list ruleset           # Listar regras (nftables)
+ss -tulnp                  # Portas em uso
+```
+
+---
+
+## 7. Recomendações de Segurança
+
+### 🔴 Prioridade Alta
+
+- **Instalar CrowdSec no VPS 3** — A API está exposta publicamente na porta 8080, vulnerável a scans e ataques automatizados
+- **Restringir porta 8080 via VPN** — Se possível, mover o acesso da API para dentro da VPN
+
+### 🟡 Prioridade Média
+
+- **Manter atualizações regulares** — `apt update && apt upgrade` semanalmente
+- **Monitorar logs** — Verificar `/var/log/` e logs do CrowdSec regularmente
+- **Configurar fail2ban** — Como camada adicional ao CrowdSec
+
+### 🟢 Prioridade Baixa
+
+- **Backup das configurações** — Exportar configs do WireGuard e AdGuard periodicamente
+- **Documentar alterações** — Manter changelog das modificações na infraestrutura
+- **Testar redundância** — Verificar se VPS 1 assume em caso de falha do VPS 2
+
+---
+
+## Resumo Rápido
+
+```
+VPN Principal:    <IP-PÚBLICO-VPS2>:51820
+VPN Backup:       <IP-PÚBLICO-VPS1>:51820
+DNS (via VPN):    10.1.141.1
+AdGuard:          http://10.1.141.1:3000 (VPN)
+API:              http://<IP-VPS3>:8080/otp
+Web:              https://<DOMÍNIO>
+```
+
+---
+
+*Última atualização: Dezembro 2025*
+
+---
+
+Pronto! Se quiser que eu adicione mais alguma coisa ou ajuste algum detalhe específico (como os IPs públicos reais), é só avisar! 🚀
