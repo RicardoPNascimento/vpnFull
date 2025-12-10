@@ -1,0 +1,320 @@
+# VM1 - Manual Pós-Reboot
+
+> **Documento de Recuperação de Firewall**  
+> Última atualização: 10 de Dezembro de 2025
+
+---
+
+## 1. Resumo da Configuração
+
+| Componente | Descrição |
+|------------|-----------|
+| **CrowdSec** | IDS/IPS colaborativo que detecta e bloqueia ameaças |
+| **CrowdSec Firewall Bouncer** | Aplica bloqueios via iptables/ipset |
+| **WireGuard VPN** | VPN na porta UDP 443 |
+| **Rede VPN** | 10.224.30.0/24 |
+| **IP da VM1 na VPN** | 10.224.30.1 |
+| **Interface de rede** | ens3 (pública), wg0 (VPN) |
+
+---
+
+## 2. Problema Conhecido
+
+### Por que as regras não persistem após reboot?
+
+O `netfilter-persistent` tenta carregar as regras do iptables **antes** do `crowdsec-firewall-bouncer` criar os ipsets necessários.
+
+**Ordem do problema:**
+
+1. Sistema inicia
+2. `netfilter-persistent` tenta carregar `/etc/iptables/rules.v4`
+3. As regras referenciam `crowdsec-blacklists-0` e `crowdsec-blacklists-1`
+4. Esses ipsets ainda **não existem** (bouncer não iniciou)
+5. **ERRO:** `Set crowdsec-blacklists-1 doesn't exist`
+6. Regras **não são carregadas**
+
+**Tempo de inicialização:**
+- `netfilter-persistent`: ~93ms
+- `crowdsec-firewall-bouncer`: ~17 segundos
+
+Por isso, é necessário aplicar as regras manualmente após o reboot.
+
+---
+
+## 3. Script Pós-Reboot
+
+### Opção A: Comando único (copiar e colar)
+
+sudo iptables -F INPUT && sudo iptables -F FORWARD && sudo iptables -t nat -F POSTROUTING && \
+sudo iptables -I INPUT 1 -j CROWDSEC_CHAIN && \
+sudo iptables -A INPUT -i lo -j ACCEPT && \
+sudo iptables -A INPUT -i wg0 -j ACCEPT -m comment --comment "vpn-interna" && \
+sudo iptables -A INPUT -p udp --dport 443 -j ACCEPT -m comment --comment "wireguard" && \
+sudo iptables -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT && \
+sudo iptables -A INPUT -p icmp -j ACCEPT && \
+sudo iptables -A INPUT -p tcp --dport 22 -m state --state NEW -j ACCEPT && \
+sudo iptables -A INPUT -j REJECT --reject-with icmp-host-prohibited && \
+sudo iptables -A FORWARD -i wg0 -j ACCEPT && \
+sudo iptables -A FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT && \
+sudo iptables -t nat -A POSTROUTING -s 10.224.30.0/24 -o ens3 -j MASQUERADE && \
+echo "✅ Firewall restaurado!"
+
+### Opção B: Criar script permanente
+
+sudo tee /usr/local/bin/restaurar-firewall.sh << 'EOF'
+#!/bin/bash
+# VM1 - Restaurar Firewall Pós-Reboot
+# Executar após cada reinicialização
+
+echo "🔧 Restaurando regras de firewall..."
+
+# Aguardar CrowdSec Bouncer criar os ipsets
+sleep 5
+
+# Verificar se CROWDSEC_CHAIN existe
+if ! sudo iptables -L CROWDSEC_CHAIN -n &>/dev/null; then
+    echo "❌ ERRO: CROWDSEC_CHAIN não existe. Aguarde o bouncer iniciar."
+    echo "Execute: sudo systemctl status crowdsec-firewall-bouncer"
+    exit 1
+fi
+
+# Limpar regras existentes
+sudo iptables -F INPUT
+sudo iptables -F FORWARD
+sudo iptables -t nat -F POSTROUTING
+
+# INPUT - CrowdSec primeiro (posição 1)
+sudo iptables -I INPUT 1 -j CROWDSEC_CHAIN
+
+# INPUT - Loopback
+sudo iptables -A INPUT -i lo -j ACCEPT
+
+# INPUT - VPN interna
+sudo iptables -A INPUT -i wg0 -j ACCEPT -m comment --comment "vpn-interna"
+
+# INPUT - Porta WireGuard
+sudo iptables -A INPUT -p udp --dport 443 -j ACCEPT -m comment --comment "wireguard"
+
+# INPUT - Conexões estabelecidas
+sudo iptables -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+# INPUT - ICMP (ping)
+sudo iptables -A INPUT -p icmp -j ACCEPT
+
+# INPUT - SSH
+sudo iptables -A INPUT -p tcp --dport 22 -m state --state NEW -j ACCEPT
+
+# INPUT - Rejeitar todo o resto
+sudo iptables -A INPUT -j REJECT --reject-with icmp-host-prohibited
+
+# FORWARD - Tráfego da VPN
+sudo iptables -A FORWARD -i wg0 -j ACCEPT
+sudo iptables -A FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+# NAT - Masquerade para VPN acessar internet
+sudo iptables -t nat -A POSTROUTING -s 10.224.30.0/24 -o ens3 -j MASQUERADE
+
+echo "✅ Firewall restaurado com sucesso!"
+echo ""
+echo "Verificando regras..."
+sudo iptables -L INPUT -n --line-numbers
+EOF
+
+sudo chmod +x /usr/local/bin/restaurar-firewall.sh
+echo "Script criado em /usr/local/bin/restaurar-firewall.sh"
+
+**Para executar o script:**
+
+sudo /usr/local/bin/restaurar-firewall.sh
+
+---
+
+## 4. Comando de Verificação
+
+Execute após restaurar para confirmar que tudo está funcionando:
+
+echo "╔════════════════════════════════════════╗" && \
+echo "║     VM1 - VERIFICAÇÃO COMPLETA         ║" && \
+echo "╚════════════════════════════════════════╝" && \
+echo -e "\n=== SERVIÇOS ===" && \
+echo -n "crowdsec: " && sudo systemctl is-active crowdsec && \
+echo -n "bouncer: " && sudo systemctl is-active crowdsec-firewall-bouncer && \
+echo -n "wireguard: " && sudo systemctl is-active wg-quick@wg0 && \
+echo -e "\n=== INPUT ===" && \
+sudo iptables -L INPUT -n --line-numbers && \
+echo -e "\n=== CROWDSEC CHAIN ===" && \
+sudo iptables -L CROWDSEC_CHAIN -n && \
+echo -e "\n=== FORWARD ===" && \
+sudo iptables -L FORWARD -n && \
+echo -e "\n=== NAT ===" && \
+sudo iptables -t nat -L POSTROUTING -n
+
+**Resultado esperado:**
+
+=== SERVIÇOS ===
+crowdsec: active
+bouncer: active
+wireguard: active
+
+=== INPUT ===
+num  target              prot opt source    destination
+1    CROWDSEC_CHAIN      0    --  0.0.0.0/0 0.0.0.0/0
+2    ACCEPT              0    --  0.0.0.0/0 0.0.0.0/0    (lo)
+3    ACCEPT              0    --  0.0.0.0/0 0.0.0.0/0    (vpn-interna)
+4    ACCEPT              17   --  0.0.0.0/0 0.0.0.0/0    udp dpt:443
+5    ACCEPT              0    --  0.0.0.0/0 0.0.0.0/0    state RELATED,ESTABLISHED
+6    ACCEPT              1    --  0.0.0.0/0 0.0.0.0/0    (icmp)
+7    ACCEPT              6    --  0.0.0.0/0 0.0.0.0/0    tcp dpt:22
+8    REJECT              0    --  0.0.0.0/0 0.0.0.0/0    reject-with icmp-host-prohibited
+
+---
+
+## 5. Explicação das Regras
+
+### Chain INPUT (ordem importa!)
+
+| # | Regra | Descrição |
+|---|-------|-----------|
+| 1 | `CROWDSEC_CHAIN` | Primeira verificação! Checa se IP está na blacklist do CrowdSec |
+| 2 | `-i lo` | Aceita tráfego interno (loopback 127.0.0.1) |
+| 3 | `-i wg0` | Aceita todo tráfego vindo da interface VPN |
+| 4 | `udp --dport 443` | Aceita conexões WireGuard (handshake) |
+| 5 | `RELATED,ESTABLISHED` | Aceita respostas de conexões já estabelecidas |
+| 6 | `-p icmp` | Aceita ping (útil para diagnóstico) |
+| 7 | `tcp --dport 22` | Aceita novas conexões SSH |
+| 8 | `REJECT` | Bloqueia e rejeita todo o resto |
+
+### Chain FORWARD
+
+| Regra | Descrição |
+|-------|-----------|
+| `-i wg0 -j ACCEPT` | Encaminha tráfego vindo da VPN para internet |
+| `-o wg0 ESTABLISHED` | Retorna respostas para a VPN |
+
+### NAT (POSTROUTING)
+
+| Regra | Descrição |
+|-------|-----------|
+| `MASQUERADE` | Traduz IPs da VPN (10.224.30.x) para o IP público da VM1 |
+
+---
+
+## 6. Comandos Úteis
+
+### CrowdSec
+
+# Ver IPs banidos
+sudo cscli decisions list
+
+# Desbanir um IP específico
+sudo cscli decisions delete --ip X.X.X.X
+
+# Ver alertas
+sudo cscli alerts list
+
+# Status do CrowdSec
+sudo cscli metrics
+
+# Logs em tempo real
+sudo journalctl -u crowdsec -f
+
+# Logs do bouncer
+sudo journalctl -u crowdsec-firewall-bouncer -f
+
+### WireGuard
+
+# Status da VPN
+sudo wg show
+
+# Ver configuração
+sudo cat /etc/wireguard/wg0.conf
+
+# Reiniciar WireGuard
+sudo systemctl restart wg-quick@wg0
+
+# Ver logs
+sudo journalctl -u wg-quick@wg0
+
+### Firewall
+
+# Ver todas as regras INPUT
+sudo iptables -L INPUT -n -v --line-numbers
+
+# Ver regras NAT
+sudo iptables -t nat -L -n -v
+
+# Ver regras FORWARD
+sudo iptables -L FORWARD -n -v
+
+# Ver ipsets do CrowdSec
+sudo ipset list -n
+
+# Contar IPs bloqueados
+sudo ipset list crowdsec-blacklists-0 | wc -l
+
+---
+
+## 7. Arquivos Importantes
+
+| Arquivo | Descrição |
+|---------|-----------|
+| `/etc/wireguard/wg0.conf` | Configuração do WireGuard |
+| `/etc/crowdsec/config.yaml` | Configuração principal do CrowdSec |
+| `/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml` | Configuração do bouncer |
+| `/etc/iptables/rules.v4` | Regras salvas (não funciona no boot) |
+| `/usr/local/bin/restaurar-firewall.sh` | Script de restauração (se criado) |
+
+---
+
+## 8. Checklist Pós-Reboot
+
+Após cada reinicialização, siga esta ordem:
+
+1. [ ] Conectar via SSH
+2. [ ] Verificar serviços: `sudo systemctl is-active crowdsec crowdsec-firewall-bouncer wg-quick@wg0`
+3. [ ] Aguardar ~20 segundos para bouncer criar ipsets
+4. [ ] Executar script de restauração ou comando único
+5. [ ] Verificar regras com comando de verificação
+6. [ ] Testar VPN no dispositivo cliente
+
+---
+
+## 9. Troubleshooting
+
+### VPN não conecta
+
+# Verificar se WireGuard está rodando
+sudo systemctl status wg-quick@wg0
+
+# Verificar porta 443 aberta
+sudo ss -ulnp | grep 443
+
+# Verificar regra no firewall
+sudo iptables -L INPUT -n | grep 443
+
+### CrowdSec não está bloqueando
+
+# Verificar se bouncer está ativo
+sudo systemctl status crowdsec-firewall-bouncer
+
+# Verificar se CROWDSEC_CHAIN existe
+sudo iptables -L CROWDSEC_CHAIN -n
+
+# Verificar ipsets
+sudo ipset list -n
+
+### Internet não funciona pela VPN
+
+# Verificar IP forward
+cat /proc/sys/net/ipv4/ip_forward  # Deve ser 1
+
+# Verificar NAT
+sudo iptables -t nat -L POSTROUTING -n
+
+# Verificar FORWARD
+sudo iptables -L FORWARD -n
+
+---
+
+**Documento criado para VM1 - Oracle Cloud**  
+**Mantenha este documento salvo para referência futura!**
